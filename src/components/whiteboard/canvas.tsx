@@ -195,6 +195,7 @@ export function WhiteboardCanvas() {
           break;
         }
         case 'text': {
+          if (editingTextId) return; // don't create new while editing
           const element = createTextElement(canvasPoint);
           pushHistory();
           addElement(element);
@@ -213,7 +214,7 @@ export function WhiteboardCanvas() {
         }
       }
     },
-    [activeTool, canvasState, elements, createPenElement, createShapeElement, createLineElement, createArrowElement, createTextElement, createStickyElement, setSelectedElementId, pushHistory, addElement, setCurrentElement, setIsPanning, setPanStart, isPanning, setEditingTextId, setActiveTool]
+    [activeTool, canvasState, elements, createPenElement, createShapeElement, createLineElement, createArrowElement, createTextElement, createStickyElement, setSelectedElementId, pushHistory, addElement, setCurrentElement, setIsPanning, setPanStart, isPanning, setEditingTextId, setActiveTool, editingTextId]
   );
 
   const handleMouseMove = useCallback(
@@ -328,6 +329,24 @@ export function WhiteboardCanvas() {
       });
     },
     [canvasState, setCanvasState]
+  );
+
+  // Handle double-click for editing text
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const canvasPoint = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top, canvasState);
+      for (let i = elements.length - 1; i >= 0; i--) {
+        const el = elements[i];
+        if ((el.type === 'text' || el.type === 'sticky') && hitTestElement(el, canvasPoint, 8 / canvasState.zoom)) {
+          setEditingTextId(el.id);
+          break;
+        }
+      }
+    },
+    [canvasState, elements, setEditingTextId]
   );
 
   // Handle keyboard shortcuts
@@ -445,9 +464,9 @@ export function WhiteboardCanvas() {
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
+        onDoubleClick={handleDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
       />
-      {/* Text Editing Overlay */}
       {editingTextId && (
         <TextEditingOverlay
           elementId={editingTextId}
@@ -459,7 +478,7 @@ export function WhiteboardCanvas() {
   );
 }
 
-// Text editing overlay component
+// Inline text editor
 function TextEditingOverlay({
   elementId,
   canvasState,
@@ -473,61 +492,44 @@ function TextEditingOverlay({
   const updateElement = useWhiteboardStore((s) => s.updateElement);
   const pushHistory = useWhiteboardStore((s) => s.pushHistory);
   const element = elements.find((e) => e.id === elementId);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-      textareaRef.current.select();
-    }
+    if (inputRef.current) { inputRef.current.focus(); inputRef.current.select(); }
   }, []);
 
   if (!element || (element.type !== 'text' && element.type !== 'sticky')) return null;
 
   const screenX = element.x * canvasState.zoom + canvasState.offsetX;
   const screenY = element.y * canvasState.zoom + canvasState.offsetY;
-  const screenWidth = (element.type === 'sticky' ? element.width : 300) * canvasState.zoom;
-  const screenHeight = (element.type === 'sticky' ? element.height : 200) * canvasState.zoom;
-
-  const handleBlur = () => {
-    if (textareaRef.current) {
-      pushHistory();
-      updateElement(elementId, { text: textareaRef.current.value } as Partial<WhiteboardElement>);
-    }
-    onClose();
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      onClose();
-    }
-    // Prevent shortcuts from firing while editing
-    e.stopPropagation();
-  };
-
-  const isSticky = element.type === 'sticky';
 
   return (
-    <textarea
-      ref={textareaRef}
-      defaultValue={element.text || ''}
-      className="absolute border-2 border-blue-400 outline-none resize-none p-3"
-      style={{
-        left: screenX,
-        top: screenY,
-        width: screenWidth,
-        height: screenHeight,
-        fontSize: `${(element.fontSize || 16) * canvasState.zoom}px`,
-        fontFamily: element.fontFamily || 'system-ui, sans-serif',
-        color: isSticky ? '#1e1e1e' : element.color,
-        backgroundColor: isSticky ? element.fill : 'transparent',
-        borderRadius: isSticky ? '4px' : '0',
-        zIndex: 1000,
-        lineHeight: 1.4,
-        boxShadow: isSticky ? '2px 2px 8px rgba(0,0,0,0.15)' : 'none',
-      }}
-      onBlur={handleBlur}
-      onKeyDown={handleKeyDown}
-    />
+    <div className="fixed z-[9999]" style={{ left: screenX, top: screenY }}>
+      <input
+        ref={inputRef}
+        type="text"
+        defaultValue={element.text || ''}
+        onBlur={(e) => {
+          pushHistory();
+          updateElement(elementId, { text: e.target.value } as Partial<WhiteboardElement>);
+          onClose();
+        }}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Escape') onClose();
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        className="outline-none border-0 bg-transparent p-0 m-0"
+        style={{
+          fontSize: `${(element.fontSize || 16) * canvasState.zoom}px`,
+          fontFamily: element.fontFamily || 'system-ui, sans-serif',
+          color: element.type === 'sticky' ? '#1e1e1e' : element.color,
+          caretColor: element.type === 'sticky' ? '#1e1e1e' : element.color,
+          lineHeight: 1.4,
+          width: (element.type === 'sticky' ? element.width : 200) * canvasState.zoom,
+          background: 'transparent',
+        }}
+      />
+    </div>
   );
 }
