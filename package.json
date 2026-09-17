@@ -1,11 +1,12 @@
 {
-  "name": "nextjs_tailwind_shadcn_ts",
-  "version": "0.2.0",
+  "name": "z-board",
+  "version": "1.0.0",
+  "description": "Z-Board 白板应用",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
-    "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
+    "build": "next build && (if exist .next\\standalone\\.next (robocopy .next\\static .next\\standalone\\.next\\static /E /NJH /NJS /NDL /NFL >nul) else (mkdir .next\\standalone\\.next && robocopy .next\\static .next\\standalone\\.next\\static /E /NJH /NJS /NDL /NFL >nul)) && robocopy public .next\\standalone\\public /E /NJH /NJS /NDL /NFL >nul",
+    "start": "node .next/standalone/server.js",
     "lint": "eslint .",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
