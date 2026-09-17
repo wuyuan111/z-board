@@ -36,7 +36,7 @@ export default function Home() {
 
         <div className="flex-1" />
 
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground">
           <span>快捷键: V 选择 | P 画笔 | R 矩形 | 空格 平移</span>
         </div>
       </header>

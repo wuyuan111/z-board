@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
@@ -12,6 +12,16 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  // 禁止页面级缩放:画布自己处理双指捏合,也防止 iOS 聚焦输入框时自动放大页面
+  maximumScale: 1,
+  userScalable: false,
+  // 安卓键盘弹出时压缩布局而不是盖住内容
+  interactiveWidget: "resizes-content",
+};
 
 export const metadata: Metadata = {
   title: "Z-Board - 在线白板",

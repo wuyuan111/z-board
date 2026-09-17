@@ -120,19 +120,78 @@ export function WhiteboardCanvas() {
     }
   }, [activeTool, isPanning]);
 
-  // Handle mouse events
+  // Handle pointer events (unified mouse + touch + pen)
   const isDrawing = useRef(false);
   const startPoint = useRef<Point | null>(null);
+  const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStart = useRef<{
+    distance: number;
+    zoom: number;
+    canvasPoint: Point;
+  } | null>(null);
+  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
 
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
+      // 捕获指针,手指/鼠标移出画布也能持续追踪
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+
+      activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
       const rect = canvas.getBoundingClientRect();
+
+      // 双指按下:进入捏合缩放,取消进行中的绘制
+      if (activePointers.current.size === 2) {
+        isDrawing.current = false;
+        startPoint.current = null;
+        setCurrentElement(null);
+        setIsPanning(false);
+        setPanStart(null);
+        const [p1, p2] = [...activePointers.current.values()];
+        const midX = (p1.x + p2.x) / 2 - rect.left;
+        const midY = (p1.y + p2.y) / 2 - rect.top;
+        pinchStart.current = {
+          distance: Math.hypot(p2.x - p1.x, p2.y - p1.y),
+          zoom: canvasState.zoom,
+          canvasPoint: screenToCanvas(midX, midY, canvasState),
+        };
+        return;
+      }
+
+      if (activePointers.current.size > 2) return;
+
       const screenX = e.clientX - rect.left;
       const screenY = e.clientY - rect.top;
       const canvasPoint = screenToCanvas(screenX, screenY, canvasState);
+
+      // 触屏双击:编辑已有文字/便签(触屏没有原生 dblclick)
+      if (e.pointerType === 'touch') {
+        const now = Date.now();
+        const lt = lastTap.current;
+        if (lt && now - lt.time < 350 && Math.hypot(e.clientX - lt.x, e.clientY - lt.y) < 30) {
+          lastTap.current = null;
+          activePointers.current.delete(e.pointerId);
+          for (let i = elements.length - 1; i >= 0; i--) {
+            const el = elements[i];
+            if ((el.type === 'text' || el.type === 'sticky') && hitTestElement(el, canvasPoint, 16 / canvasState.zoom)) {
+              setEditingTextId(el.id);
+              break;
+            }
+          }
+          return;
+        }
+        lastTap.current = { time: now, x: e.clientX, y: e.clientY };
+      }
+
+      // 触屏命中范围比鼠标大,手指更好点选
+      const hitTolerance = (e.pointerType === 'touch' ? 16 : 8) / canvasState.zoom;
 
       // Middle mouse button or hand tool for panning
       if (e.button === 1 || (e.button === 0 && activeTool === 'hand')) {
@@ -151,7 +210,7 @@ export function WhiteboardCanvas() {
           // Hit test elements in reverse order (top-most first)
           let found = false;
           for (let i = elements.length - 1; i >= 0; i--) {
-            if (hitTestElement(elements[i], canvasPoint, 8 / canvasState.zoom)) {
+            if (hitTestElement(elements[i], canvasPoint, hitTolerance)) {
               setSelectedElementId(elements[i].id);
               pushHistory();
               found = true;
@@ -217,12 +276,34 @@ export function WhiteboardCanvas() {
     [activeTool, canvasState, elements, createPenElement, createShapeElement, createLineElement, createArrowElement, createTextElement, createStickyElement, setSelectedElementId, pushHistory, addElement, setCurrentElement, setIsPanning, setPanStart, isPanning, setEditingTextId, setActiveTool, editingTextId]
   );
 
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
+      if (activePointers.current.has(e.pointerId)) {
+        activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      }
+
       const rect = canvas.getBoundingClientRect();
+
+      // 双指捏合缩放 + 平移
+      if (pinchStart.current && activePointers.current.size >= 2) {
+        const [p1, p2] = [...activePointers.current.values()];
+        const distance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        if (distance > 0 && pinchStart.current.distance > 0) {
+          const newZoom = Math.max(0.1, Math.min(5, pinchStart.current.zoom * (distance / pinchStart.current.distance)));
+          const midX = (p1.x + p2.x) / 2 - rect.left;
+          const midY = (p1.y + p2.y) / 2 - rect.top;
+          setCanvasState({
+            zoom: newZoom,
+            offsetX: midX - pinchStart.current.canvasPoint.x * newZoom,
+            offsetY: midY - pinchStart.current.canvasPoint.y * newZoom,
+          });
+        }
+        return;
+      }
+
       const screenX = e.clientX - rect.left;
       const screenY = e.clientY - rect.top;
       const canvasPoint = screenToCanvas(screenX, screenY, canvasState);
@@ -283,8 +364,27 @@ export function WhiteboardCanvas() {
     [canvasState, isPanning, panStart, setCursorPosition, setCanvasState, setPanStart, setCurrentElement, createLineElement, createArrowElement, createShapeElement]
   );
 
-  const handleMouseUp = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      activePointers.current.delete(e.pointerId);
+      try {
+        canvasRef.current?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+
+      // 捏合结束:剩余手指不继续任何操作,等下次重新按下
+      if (pinchStart.current) {
+        if (activePointers.current.size < 2) {
+          pinchStart.current = null;
+          isDrawing.current = false;
+          startPoint.current = null;
+          setIsPanning(false);
+          setPanStart(null);
+        }
+        return;
+      }
+
       if (isPanning) {
         setIsPanning(false);
         setPanStart(null);
@@ -458,11 +558,11 @@ export function WhiteboardCanvas() {
       <canvas
         ref={canvasRef}
         className="absolute inset-0"
-        style={{ cursor: getCursor() }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        style={{ cursor: getCursor(), touchAction: 'none' }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
         onWheel={handleWheel}
         onDoubleClick={handleDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
@@ -492,7 +592,7 @@ function TextEditingOverlay({
   const updateElement = useWhiteboardStore((s) => s.updateElement);
   const pushHistory = useWhiteboardStore((s) => s.pushHistory);
   const element = elements.find((e) => e.id === elementId);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (inputRef.current) { inputRef.current.focus(); inputRef.current.select(); }
@@ -500,34 +600,50 @@ function TextEditingOverlay({
 
   if (!element || (element.type !== 'text' && element.type !== 'sticky')) return null;
 
+  const isSticky = element.type === 'sticky';
   const screenX = element.x * canvasState.zoom + canvasState.offsetX;
   const screenY = element.y * canvasState.zoom + canvasState.offsetY;
 
+  const commit = (value: string) => {
+    pushHistory();
+    updateElement(elementId, { text: value } as Partial<WhiteboardElement>);
+    onClose();
+  };
+
   return (
-    <div className="fixed z-[9999]" style={{ left: screenX, top: screenY }}>
-      <input
+    // absolute 定位在画布容器内:跟随画布坐标,手机键盘弹出时不会被顶飞
+    <div className="absolute z-[9999]" style={{ left: screenX, top: screenY }}>
+      <textarea
         ref={inputRef}
-        type="text"
         defaultValue={element.text || ''}
-        onBlur={(e) => {
-          pushHistory();
-          updateElement(elementId, { text: e.target.value } as Partial<WhiteboardElement>);
-          onClose();
-        }}
+        rows={1}
+        enterKeyHint={isSticky ? 'enter' : 'done'}
+        autoComplete="off"
+        spellCheck={false}
+        placeholder={isSticky ? '输入便签内容...' : '输入文字...'}
+        onBlur={(e) => commit(e.target.value)}
         onKeyDown={(e) => {
           e.stopPropagation();
           if (e.key === 'Escape') onClose();
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          // 普通文字回车提交;便签回车换行,点外部或 Esc 结束
+          if (e.key === 'Enter' && !isSticky) {
+            e.preventDefault();
+            (e.target as HTMLTextAreaElement).blur();
+          }
         }}
-        className="outline-none border-0 bg-transparent p-0 m-0"
+        className="outline-none resize-none rounded-sm"
         style={{
           fontSize: `${(element.fontSize || 16) * canvasState.zoom}px`,
           fontFamily: element.fontFamily || 'system-ui, sans-serif',
-          color: element.type === 'sticky' ? '#1e1e1e' : element.color,
-          caretColor: element.type === 'sticky' ? '#1e1e1e' : element.color,
-          lineHeight: 1.4,
-          width: (element.type === 'sticky' ? element.width : 200) * canvasState.zoom,
-          background: 'transparent',
+          color: isSticky ? '#1e1e1e' : element.color,
+          caretColor: isSticky ? '#1e1e1e' : element.color,
+          lineHeight: isSticky ? 1.4 : 1.3,
+          width: Math.max((isSticky ? element.width : 200) * canvasState.zoom, 140),
+          height: isSticky ? Math.max(element.height * canvasState.zoom, 60) : 'auto',
+          minHeight: '2em',
+          padding: isSticky ? 12 * canvasState.zoom : 2,
+          background: isSticky ? (element.fill || '#fef3c7') : 'rgba(255,255,255,0.92)',
+          border: '2px solid rgba(59,130,246,0.65)',
         }}
       />
     </div>
